@@ -1,2 +1,2 @@
-cec==0.2.7
-PyChromecast==4.1.0
+libtmux==0.8.5
+PyChromecast==7.7.1

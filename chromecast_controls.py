@@ -2,18 +2,18 @@
 
 import pychromecast
 import threading
-import cec
 import time
 import argparse
 import sys
 import os
 import shutil
 import subprocess
+import libtmux
+from time import sleep
 
 parser = argparse.ArgumentParser(description='Checks if a particular Chromecast is idle, and switches off specified TV/Hifi equipment after a timeout. Also allows controlling of volume by CEC for surround-sound media.')
 parser.add_argument('--setup', action='store_true', help='Initial Setup')
 parser.add_argument('--chromecast', default='Living Room TV', help='Name of Chromecast to monitor (default: "Living Room TV"')
-parser.add_argument('--cec', type=int, default=5, help='Number of CEC device to monitor (default: 5)')
 parser.add_argument('--volume', dest='volume', action='store_true', help='Send CEC Volume commands when Chromecast changes volume')
 parser.set_defaults(volume=False)
 parser.add_argument('--standby', dest='standby', action='store_true', help='Put Hifi into standby when Chromecast is idle')
@@ -29,34 +29,18 @@ if args.setup:
     else:
         print(f"To set up, please run as root:\n sudo ./{sys.argv[0].split('/')[-1]} --setup")
 
-    print("Getting CEC Devices")
-    cec.init()
-    cec_devs = []
-    all_devs = cec.list_devices()
-    [ print(i, all_devs[i].osd_string) for i in all_devs ]
-    cec_dev = input("Select a CEC Device to control (don't select Chromecast here): ")
-    while True:
-        try:
-            if int(cec_dev) in all_devs:
-                break
-        except ValueError:
-            pass
-        cec_dev = input("Type the number of a listed device: ")
-    #TODO - allow multi devices
-    cec_devs.append(cec_dev)
-
     print("\nGetting Chromecasts on network")
     chromecasts = pychromecast.get_chromecasts()
-    [ print(i, cc.device.friendly_name) for i, cc in enumerate(chromecasts) ]
+    [ print(i, cc.device.friendly_name) for i, cc in enumerate(chromecasts[0]) ]
     chromecast = input("Select a Chromecast device to monitor: ")
     while True:
         try:
-            if int(chromecast) < len(chromecasts) and int(chromecast) >= 0:
+            if int(chromecast) < len(chromecasts[0]) and int(chromecast) >= 0:
                 break
         except ValueError:
             pass
         chromecast = input("Type the number of a listed device: ")
-    cc = chromecasts[int(chromecast)].device.friendly_name
+    cc = chromecasts[0][int(chromecast)].device.friendly_name
 
     vol = "z"
     while vol not in "yn":
@@ -66,7 +50,7 @@ if args.setup:
     while sb not in "yn":
         sb = input("Would you like to put hifi equipment into standby when Chromecast is idle? (y/n) ").lower()
 
-    options = f'--cec {cec_devs[0]} --chromecast "{cc}"{" --volume" if vol == "y" else ""}{" --standby" if sb == "y" else ""}'
+    options = f'--chromecast "{cc}"{" --volume" if vol == "y" else ""}{" --standby" if sb == "y" else ""}'
     if os.geteuid() == 0:  # we have root/sudo
         print("copying myself into /usr/local/bin")
         shutil.copy2(sys.argv[0], "/usr/local/bin")
@@ -92,7 +76,6 @@ else:
 
 CHROMECAST_NAME = args.chromecast
 TIMEOUT = args.timeout
-CEC_DEV_ADDRS = [args.cec]
 
 # send CEC volume changes when Chromecast's volume has changed
 # this fixes the annoyance that CC won't change volume for media
@@ -101,12 +84,12 @@ MIRROR_VOLUME = args.volume
 
 
 class StatusListener:
-    def __init__(self, cast, cec_devs, timeout=300):
+    def __init__(self, cast, cec, timeout=300):
         self.cast = cast
         self.timeout = timeout
         self.create_timer()
-        self.cec_devs = cec_devs
         self.volume_level = None
+        self.cec = cec
 
     def new_cast_status(self, status):
         if MIRROR_VOLUME:
@@ -125,14 +108,14 @@ class StatusListener:
                         self.cast.volume_down()  # to get around max volume problem
                     else:
                         self.volume_level = status.volume_level
-                    cec.volume_up()
+                    self.cec.send_keys('volup')
                 elif status.volume_level < self.volume_level:  #volume down
                     print(f"vol down")
                     if status.volume_level == 0:
                         self.cast.volume_up()  # to get around min volume problem
                     else:
                         self.volume_level = status.volume_level
-                    cec.volume_down()
+                    self.cec.send_keys('voldown')
 
         if status.status_text:
             print('app connection: ', status.status_text)
@@ -154,30 +137,32 @@ class StatusListener:
 
     def timer_expired(self):
         print("timer expired")
-        for cec_dev in self.cec_devs:
-            cec_dev.standby()
-        self.create_timer()
+        cec.send_keys('standby 5')
+        cec.send_keys('standby 0')
 
 
 # set up CEC
-print("setting up CEC")
-cec.init()
-print("getting CEC devices")
-all_devs = cec.list_devices()
+print("Setting up tmux window with cec-client")
+server = libtmux.Server()
+session = server.new_session(session_name="CEC")
+CEC = session.attached_window.attached_pane
+CEC.send_keys('cec-client -t -p')
+sleep(5)
+CEC.send_keys('as')
+sleep(5)
+CEC.send_keys('on 5')
+sleep(2)
 
-cec_devs = []
-for cec_dev_addr in CEC_DEV_ADDRS:
-    cec_devs.append(all_devs[cec_dev_addr])
 
 # set up Chromecast
 print("getting Chromecasts")
 chromecasts = pychromecast.get_chromecasts()
-chromecast = next(cc for cc in chromecasts
+chromecast = next(cc for cc in chromecasts[0]
                   if cc.device.friendly_name == CHROMECAST_NAME)
 chromecast.start()
 
 # connect statuslistener
-listenerCast = StatusListener(chromecast, cec_devs, TIMEOUT)
+listenerCast = StatusListener(chromecast, CEC, TIMEOUT)
 chromecast.register_status_listener(listenerCast)
 
 # sit back and wait
