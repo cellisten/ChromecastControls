@@ -137,8 +137,8 @@ class StatusListener:
 
     def timer_expired(self):
         print("timer expired")
-        cec.send_keys('standby 5')
-        cec.send_keys('standby 0')
+        self.cec.send_keys('standby 5')
+        self.cec.send_keys('standby 0')
 
 
 # set up CEC
